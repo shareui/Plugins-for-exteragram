@@ -1,0 +1,91 @@
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from client_utils import send_message, run_on_queue
+from ui.settings import Header, Input
+from java.util import Locale
+import time
+
+__id__ = "h6e8dy2ie9"
+__name__ = "Word Spam"
+__description__ = "пишет лесенкой сообщения по команде .wspam [текст]"
+__author__ = "@shrdevv"
+__version__ = "1.0"
+__icon__ = "plugin232/7"
+__min_version__ = "11.12.0"
+
+DEFAULT_DELAY = 200
+
+class LocalizationManager:
+    def __init__(self):
+        self.language = Locale.getDefault().getLanguage()
+        self.language = self.language if self.language in self._get_supported_languages() else "en"
+
+    def get_string(self, string):
+        return self.strings[self.language][string]
+
+    def _get_supported_languages(self):
+        return self.strings.keys()
+
+    strings = {
+        "ru": {
+            "USAGE_EXAMPLE": "⚠️ пример: .wspam привет как дела",
+            "SETTINGS_TITLE": "настройки плагина",
+            "SETTINGS_DELAY": "задержка между сообщениями (мс)",
+            "SETTINGS_DELAY_SUB": "по умолчанию 200 мс"
+        },
+        "en": {
+            "USAGE_EXAMPLE": "⚠️ usage: .wspam hello how are you",
+            "SETTINGS_TITLE": "plugin settings",
+            "SETTINGS_DELAY": "delay between messages (ms)",
+            "SETTINGS_DELAY_SUB": "default is 200 ms"
+        }
+    }
+
+locali = LocalizationManager()
+
+class WordSpamPlugin(BasePlugin):
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+
+    def create_settings(self):
+        return [
+            Header(locali.get_string("SETTINGS_TITLE")),
+            Input(
+                key="wspam_delay",
+                text=locali.get_string("SETTINGS_DELAY"),
+                default=str(DEFAULT_DELAY),
+                subtext=locali.get_string("SETTINGS_DELAY_SUB")
+            )
+        ]
+
+    def on_send_message_hook(self, account, params):
+        if not hasattr(params, "message") or not isinstance(params.message, str):
+            return HookResult()
+        if not params.message.startswith(".wspam"):
+            return HookResult()
+        try:
+            parts = params.message.strip().split()
+            if len(parts) < 2:
+                params.message = locali.get_string("USAGE_EXAMPLE")
+                return HookResult(strategy=HookStrategy.MODIFY, params=params)
+            words = parts[1:]
+            delay_str = self.get_setting("wspam_delay", str(DEFAULT_DELAY))
+            try:
+                delay = int(delay_str)
+            except Exception:
+                delay = DEFAULT_DELAY
+            peer = getattr(params, "peer", None)
+            replyToMsg = getattr(params, "replyToMsg", None)
+            replyToTopMsg = getattr(params, "replyToTopMsg", None)
+            for idx, word in enumerate(words):
+                def send_word(w=word):
+                    msg_params = {"peer": peer, "message": w}
+                    if replyToMsg is not None:
+                        msg_params["replyToMsg"] = replyToMsg
+                    if replyToTopMsg is not None:
+                        msg_params["replyToTopMsg"] = replyToTopMsg
+                    send_message(msg_params)
+                run_on_queue(send_word, "pluginsQueue", delay * idx)
+            return HookResult(strategy=HookStrategy.CANCEL, params=params)
+        except Exception as e:
+            params.message = f"Error: {str(e)}"
+            return HookResult(strategy=HookStrategy.MODIFY, params=params)

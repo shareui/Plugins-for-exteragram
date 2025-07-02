@@ -1,0 +1,101 @@
+# utf8 <--- мне один еблан начал втирать из-за этой хуйни что у меня код написан через ИИ
+import re
+import traceback
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from android_utils import log
+from java.util import ArrayList
+from org.telegram.tgnet import TLRPC
+
+# meta
+__id__ = "17g522s7"
+__name__ = "Code Formatter"
+__description__ = "Автоматически распознает языки программирования и форматирует код. Поддерживаемые языки: HTML, CSS, Python, JavaScript, Java, C++, C#, Assembler"
+__author__ = "@shrdevv"
+__version__ = "1.0.2"
+__icon__ = "plugin232/5"
+__min_version__ = "11.12.0"
+
+# codeeeee1488
+class CodeFormatterPlugin(BasePlugin):
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+
+    def detect_language(self, text: str) -> str or None:
+        # HTML
+        if re.search(r'<\s*([a-zA-Z1-6]+)\s*.*?>', text, re.IGNORECASE):
+            return "html"
+
+        # CSS
+        if re.search(r'\{[^\}]*:[^\}]*\}', text):
+            return "css"
+
+        # Python
+        if re.search(r'\b(def|import|class|for|while|async def)\b', text):
+            return "python"
+
+        # JavaScript
+        if re.search(r'\b(function|const|let|var|console\.log|document\.getElementById)\b', text):
+            return "javascript"
+
+        # C++
+        if re.search(r'#include\s*<', text) or re.search(r'std::cout|std::cin', text):
+            return "c++"
+
+        # C#
+        if re.search(r'\b(namespace|using System|public class|static void Main)\b', text):
+            return "csharp"
+
+        # Java
+        if re.search(r'\b(public class|System\.out\.println|import java\.util)\b', text):
+            return "java"
+
+        # Assembler
+        if re.search(r'\b(mov|eax|ebx|ecx|edx|jmp|call|ret)\b', text, re.IGNORECASE):
+            return "assembler"
+
+        return None
+
+    def on_send_message_hook(self, account, params):
+        if not hasattr(params, "message") or not isinstance(params.message, str):
+            return HookResult()
+
+        original_text = params.message
+
+        if original_text.startswith((".", "!", "/")):
+            return HookResult()
+
+        if len(original_text.split()) < 3 and '\n' not in original_text:
+            return HookResult()
+
+        try:
+            lang_name = self.detect_language(original_text)
+
+            if lang_name:
+                log(f"Detected language: {lang_name}")
+
+                new_message = f"{lang_name}\n{original_text}"
+                entity = TLRPC.TL_messageEntityPre()
+                entity.language = lang_name
+
+                offset = len(lang_name) + 1
+                length = len(original_text.encode('utf_16_le')) // 2
+
+                entity.offset = offset
+                entity.length = length
+
+                if not hasattr(params, "entities") or params.entities is None:
+                    params.entities = ArrayList()
+                else:
+                    params.entities.clear()
+
+                params.entities.add(entity)
+                params.message = new_message
+
+                log(f"Formatted message. Offset: {offset}, Length: {length}")
+
+                return HookResult(strategy=HookStrategy.MODIFY, params=params)
+
+        except Exception as e:
+            log(f"Error in Code Formatter: {str(e)}\n{traceback.format_exc()}")
+
+        return HookResult()

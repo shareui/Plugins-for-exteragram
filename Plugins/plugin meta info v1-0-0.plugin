@@ -1,0 +1,111 @@
+__id__ = "15268737621"
+__name__ = "Plugin meta-info"
+__description__ = "Отправляет мета-данные .plugin-файла по команде .chpl в ответ на файл. Инструкция: ОБЯЗАТЕЛЬНО сохрани файл плагина на устройство. Примечание: Плагин читает только последний сохраненный файл, поэтому сохранять файл плагина нужно каждый раз перед проверкой."
+__author__ = "@shrdevv"
+__version__ = "3.9"
+__icon__ = "plugin232/8"
+__min_version__ = "11.12.0"
+
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from client_utils import send_message, get_messages_controller
+from java.util import Locale
+import re
+import os
+
+class LocalizationManager:
+    def __init__(self):
+        self.language = Locale.getDefault().getLanguage()
+        self.language = self.language if self.language in self._get_supported_languages() else "en"
+
+    def get_string(self, string):
+        return self.strings[self.language][string]
+
+    def _get_supported_languages(self):
+        return self.strings.keys()
+
+    strings = {
+        "ru": {
+            "USAGE_EXAMPLE": "⚠️ пример: .chpl (ответом на .plugin-файл)",
+            "NO_FILE": "⛔ Нет файла в ответе или файл не .plugin",
+            "META_RESULT": "Мета-данные плагина:\n{0}",
+            "CODE_ERROR": "⛔ Ошибка в коде плагина!\n\n{0}"
+        },
+        "en": {
+            "USAGE_EXAMPLE": "⚠️ usage: .chpl (in reply to .plugin file)",
+            "NO_FILE": "⛔ No file in reply or file is not .plugin",
+            "META_RESULT": "Plugin meta-data:\n{0}",
+            "CODE_ERROR": "⛔ Plugin code error!\n\n{0}"
+        }
+    }
+
+locali = LocalizationManager()
+
+class CheckPluginMetaPlugin(BasePlugin):
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+
+    def on_send_message_hook(self, account, params):
+        if not hasattr(params, "message") or not isinstance(params.message, str):
+            return HookResult()
+        if not params.message.startswith(".chpl"):
+            return HookResult()
+        try:
+            replyToMsg = getattr(params, "replyToMsg", None)
+            peer = getattr(params, "peer", None)
+          
+            def safe_get(obj, attr):
+                try:
+                    val = getattr(obj, attr, None)
+                    if callable(val):
+                        return val()
+                    return val
+                except Exception as e:
+                    return f"<error: {e}>"
+
+            candidates = [
+                "messageOwner", "media", "document", "getDocument", "getFileName", "getPath", "getDocumentPath",
+                "previousAttachPath", "previousMedia", "preview", "mediaThumb", "mediaSmallThumb", "photoThumbs", "pathThumb"
+            ]
+            values = {}
+            for c in candidates:
+                values[c] = safe_get(replyToMsg, c)
+            debug_info = f"CANDIDATES:\n" + "\n".join(f"{k}: {v}" for k, v in values.items())
+            send_message({"peer": peer, "message": debug_info})
+            params.message = "DEBUG: см. выше (candidates)"
+
+            DOWNLOAD_DIR = "/storage/emulated/0/Download/"
+            # Новый поиск: ищем любой .plugin-файл в Download и подпапках, берём самый свежий
+            plugin_files = []
+            for root, dirs, files in os.walk(DOWNLOAD_DIR):
+                for f in files:
+                    if f.endswith('.plugin'):
+                        full_path = os.path.join(root, f)
+                        plugin_files.append(full_path)
+            if plugin_files:
+                # Берём самый свежий по времени модификации
+                plugin_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                found_path = plugin_files[0]
+                try:
+                    with open(found_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    meta_keys = ["__id__", "__name__", "__description__", "__author__", "__version__", "__icon__", "__min_version__"]
+                    meta = {}
+                    for key in meta_keys:
+                        m = re.search(rf"^{key}\s*=\s*['\"](.*?)['\"]", content, re.MULTILINE)
+                        if m:
+                            meta[key] = m.group(1)
+                    if not meta:
+                        params.message = f"Файл {os.path.basename(found_path)} найден, но мета-данные не обнаружены."
+                        return HookResult(strategy=HookStrategy.MODIFY, params=params)
+                    meta_text = "\n".join(f"{k}: {v}" for k, v in meta.items())
+                    send_message({"peer": peer, "message": f"Мета-данные плагина из {os.path.basename(found_path)}:\n{meta_text}", "replyToMsg": getattr(params, "replyToMsg", None)})
+                    return HookResult(strategy=HookStrategy.CANCEL, params=params)
+                except Exception as e:
+                    params.message = f"Ошибка при чтении файла: {e}"
+                    return HookResult(strategy=HookStrategy.MODIFY, params=params)
+            else:
+                params.message = f".plugin-файл не найден в {DOWNLOAD_DIR} и подпапках. Сохраните нужный файл в загрузки и повторите."
+                return HookResult(strategy=HookStrategy.MODIFY, params=params)
+        except Exception as e:
+            params.message = locali.get_string("CODE_ERROR").format(str(e))
+            return HookResult(strategy=HookStrategy.MODIFY, params=params) 

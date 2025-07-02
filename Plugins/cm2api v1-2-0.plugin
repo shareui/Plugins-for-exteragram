@@ -1,0 +1,100 @@
+import traceback
+
+from base_plugin import BasePlugin, MethodReplacement
+from hook_utils import find_class
+from ui.settings import Selector, Header, Switch
+from java import jint, jboolean
+
+__name__ = "camera2 api config"
+__description__ = "Позволяет в настройках плагина изменить такие значения как: разрешение и битрейт кружочка, а также выключить стабилизацию и стандартное увеличение. Что бы плагин работал перейдите в настройки ExteraGram > Видео > Тип камеры > Camera X."
+__version__ = "1.2.0"
+__id__ = "w75wJ7fRs7R9Y1488"
+__author__ = "@shrdevv"
+__icon__ = "plugin232/4"
+__min_version__ = "11.12.0"
+
+class Camera2APIConfiguratorPlugin(BasePlugin):
+    RESOLUTIONS = [128, 256, 384, 512, 640]
+    BITRATES = [600, 800, 1000, 1200, 1400]
+
+    class ResolutionHook(MethodReplacement):
+        def __init__(self, plugin) -> None:
+            self.plugin = plugin
+        def replace_hooked_method(self, param):
+            setting_index = self.plugin.get_setting("resolution", 2)
+            resolution_value = self.plugin.RESOLUTIONS[setting_index]
+            return jint(resolution_value)
+
+    class BitrateHook(MethodReplacement):
+        def __init__(self, plugin) -> None:
+            self.plugin = plugin
+        def replace_hooked_method(self, param):
+            setting_index = self.plugin.get_setting("bitrate", 2)
+            bitrate_value = self.plugin.BITRATES[setting_index]
+            return jint(bitrate_value)
+
+    class StabilizationHook(MethodReplacement):
+        def __init__(self, plugin) -> None:
+            self.plugin = plugin
+        def replace_hooked_method(self, param):
+            return jboolean(self.plugin.get_setting("enable_stabilization", True))
+
+    class DefaultZoomHook(MethodReplacement):
+        def __init__(self, plugin) -> None:
+            self.plugin = plugin
+        def replace_hooked_method(self, param):
+            return jboolean(self.plugin.get_setting("enable_default_zoom", True))
+
+    def create_settings(self):
+        return [
+            Header(text="Настройки видеосообщений"),
+            Selector(
+                key="resolution",
+                text="Разрешение, px",
+                items=[str(r) for r in self.RESOLUTIONS],
+                default=2
+            ),
+            Selector(
+                key="bitrate",
+                text="Битрейт, кбит/с",
+                items=[str(b) for b in self.BITRATES],
+                default=2
+            ),
+            Switch(
+                key="enable_stabilization",
+                text="Включить стабилизацию",
+                default=True
+            ),
+            Switch(
+                key="enable_default_zoom",
+                text="Включить стандартное увеличение",
+                default=True
+            )
+        ]
+
+    def on_plugin_load(self):
+        try:
+            system_utils = find_class("com.exteragram.messenger.utils.SystemUtils")
+            if not system_utils:
+                self.log("SystemUtils class not found.")
+                return
+                
+            resolution_method = system_utils.getClass().getDeclaredMethod("getRoundVideoResolution")
+            if resolution_method:
+                self.hook_method(resolution_method, self.ResolutionHook(self))
+
+            bitrate_method = system_utils.getClass().getDeclaredMethod("getRoundVideoBitrate")
+            if bitrate_method:
+                self.hook_method(bitrate_method, self.BitrateHook(self))
+
+            stabilization_method = system_utils.getClass().getDeclaredMethod("useVideoStabilization")
+            if stabilization_method:
+                self.hook_method(stabilization_method, self.StabilizationHook(self))
+
+            default_zoom_method = system_utils.getClass().getDeclaredMethod("useDefaultZoom")
+            if default_zoom_method:
+                self.hook_method(default_zoom_method, self.DefaultZoomHook(self))
+
+        except Exception:
+            self.log("Failed to apply hooks. See traceback below.")
+            traceback.print_exc()

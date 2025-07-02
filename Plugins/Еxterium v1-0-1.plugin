@@ -1,0 +1,118 @@
+import plugins_manager
+from base_plugin import BasePlugin, AppEvent
+from android_utils import log
+from ui.settings import Header, Input, Divider
+from java.util import Locale
+
+__id__ = "x6g&dh7f7g"
+__name__ = "Exterium optimization"
+__description__ = "Отключает все остальные плагины при приостановке работы приложения и снова включает их при возобновлении работы. Что бы добавить плагин который НЕ будет отключен(например, автоферма) то введите его айди в настройках плагина. Как получить айди: зайдите в раздел плагинов и нажмите /поделиться/ на плагине который хотите добавить в исключения, и при отправке файла название файла будет соответствовать айди, а то есть [ID].plugin остается только переписать айди и вписать его в настройках плагина."
+__author__ = "@shrdevv"
+__version__ = "1.0.1"
+__min_version__ = "11.12.0"
+__icon__ = "plugin232/6"
+
+class LocalizationManager:
+    def __init__(self):
+        self.language = Locale.getDefault().getLanguage()
+        self.language = self.language if self.language in self.strings else "en"
+
+    def get_string(self, key: str) -> str:
+        return self.strings[self.language].get(key, self.strings["en"].get(key, key))
+
+    strings = {
+        "ru": {
+            "SETTINGS_HEADER": "Настройки оптимизации Exterium",
+            "EXCLUDED_PLUGINS_INPUT": "Исключения плагинов (ID)",
+            "EXCLUDED_PLUGINS_SUBTEXT": "Введите ID плагинов через запятую, которые не будут отключаться.",
+            "APP_PAUSING_LOG": "Приложение приостанавливается. Отключаю другие плагины.",
+            "APP_RESUMING_LOG": "Приложение возобновляется. Восстанавливаю состояния плагинов.",
+            "PLUGIN_DISABLED_LOG": "Отключен плагин: {name} ({id})",
+            "PLUGIN_REENABLED_LOG": "Включен плагин: {name} ({id})",
+            "DISABLE_ERROR_LOG": "Ошибка при отключении плагинов: {error}",
+            "RESTORE_ERROR_LOG": "Ошибка при восстановлении плагинов: {error}"
+        },
+        "en": {
+            "SETTINGS_HEADER": "Exterium Optimization Settings",
+            "EXCLUDED_PLUGINS_INPUT": "Excluded Plugins (IDs)",
+            "EXCLUDED_PLUGINS_SUBTEXT": "Enter comma-separated plugin IDs that should not be disabled.",
+            "APP_PAUSING_LOG": "App is pausing. Disabling other plugins.",
+            "APP_RESUMING_LOG": "App is resuming. Restoring plugin states.",
+            "PLUGIN_DISABLED_LOG": "Disabled plugin: {name} ({id})",
+            "PLUGIN_REENABLED_LOG": "Re-enabled plugin: {name} ({id})",
+            "DISABLE_ERROR_LOG": "Error while disabling plugins: {error}",
+            "RESTORE_ERROR_LOG": "Error while restoring plugins: {error}"
+        }
+    }
+
+locali = LocalizationManager()
+
+class PluginRestorer(BasePlugin):
+    def __init__(self):
+        super().__init__()
+        self.plugin_states = {}
+
+    def on_plugin_load(self):
+        log("[PluginRestorer] Loaded and watching for app state changes.")
+
+    def on_plugin_unload(self):
+        log("[PluginRestorer] Unloaded.")
+        self._restore_plugin_states()
+
+    def create_settings(self):
+        return [
+            Header(text=locali.get_string("SETTINGS_HEADER")),
+            Input(
+                key="excluded_plugins_ids",
+                text=locali.get_string("EXCLUDED_PLUGINS_INPUT"),
+                default="",
+                subtext=locali.get_string("EXCLUDED_PLUGINS_SUBTEXT")
+            ),
+            Divider()
+        ]
+
+    def on_app_event(self, event_type: AppEvent):
+        if event_type == AppEvent.PAUSE:
+            log(locali.get_string("APP_PAUSING_LOG"))
+            self._disable_plugins()
+        elif event_type == AppEvent.RESUME:
+            log(locali.get_string("APP_RESUMING_LOG"))
+            self._restore_plugin_states()
+
+    def _get_excluded_plugin_ids(self) -> list:
+        excluded_ids_str = self.get_setting("excluded_plugins_ids", "")
+        if not excluded_ids_str:
+            return []
+        return [id.strip() for id in excluded_ids_str.split(',') if id.strip()]
+
+    def _disable_plugins(self):
+        self.plugin_states.clear()
+        excluded_ids = self._get_excluded_plugin_ids()
+        try:
+            all_plugins = plugins_manager.PluginsManager._plugins
+            for plugin_id, plugin_instance in all_plugins.items():
+                if plugin_id == __id__ or plugin_id in excluded_ids:
+                    log(f"[PluginRestorer] Skipping exclusion for plugin: {plugin_instance.name} ({plugin_id})")
+                    continue
+                self.plugin_states[plugin_id] = plugin_instance.enabled
+                if plugin_instance.enabled:
+                    plugin_instance.enabled = False
+                    log(locali.get_string("PLUGIN_DISABLED_LOG").format(name=plugin_instance.name, id=plugin_id))
+        except Exception as e:
+            log(locali.get_string("DISABLE_ERROR_LOG").format(error=str(e)))
+
+    def _restore_plugin_states(self):
+        if not self.plugin_states:
+            return
+        try:
+            all_plugins = plugins_manager.PluginsManager._plugins
+            for plugin_id, plugin_instance in all_plugins.items():
+                if plugin_id in self.plugin_states:
+                    saved_state = self.plugin_states[plugin_id]
+                    if plugin_instance.enabled != saved_state:
+                        plugin_instance.enabled = saved_state
+                        if saved_state:
+                            log(locali.get_string("PLUGIN_REENABLED_LOG").format(name=plugin_instance.name, id=plugin_id))
+        except Exception as e:
+            log(locali.get_string("RESTORE_ERROR_LOG").format(error=str(e)))
+        self.plugin_states.clear()
