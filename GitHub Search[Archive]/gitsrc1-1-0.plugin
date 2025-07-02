@@ -1,0 +1,147 @@
+import requests
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from ui.settings import Header, Input, Divider, Text
+from java.util import Locale
+
+__id__ = "456786545"
+__name__ = "GitHub Search"
+__version__ = "1.1.0"
+__author__ = "@shrdevv"
+__description__ = "Поиск репозиториев и пользователей GitHub: .gitsrc ищет репозитории .gituser ищет аккаунты. Скорость отправки зависит только от вашего интернета. Нажатие на кнопку отправки несколько раз может привести к крашу ExteraGram." 
+__min_version__ = "11.12.0"
+__icon__ = "plugin232/10"
+
+GITHUB_API_URL = "https://api.github.com"
+TOKEN_SETTINGS_KEY = "github_token"
+
+class Locales:
+    ru = {
+        "USAGE_SRC": "Пример: .gitsrc exteraGram",
+        "USAGE_USER": "Пример: .gituser torvalds",
+        "NOT_FOUND": "Ничего не найдено :(",
+        "ERROR": "Ошибка при поиске: ",
+        "SETTINGS_TITLE": "Настройки GitHub Search",
+        "SETTINGS_TOKEN": "Нажми чтобы изменить API",
+        "SETTINGS_TOKEN_SUB": "Для увеличения лимита запросов. Можно получить тут:",
+        "SETTINGS_TOKEN_LINK": "Где взять токен?"
+    }
+    en = {
+        "USAGE_SRC": "Usage: .gitsrc exteraGram",
+        "USAGE_USER": "Usage: .gituser torvalds",
+        "NOT_FOUND": "Nothing found :(",
+        "ERROR": "Search error: ",
+        "SETTINGS_TITLE": "GitHub Search Settings",
+        "SETTINGS_TOKEN": "Click to change API",
+        "SETTINGS_TOKEN_SUB": "To increase request limits. You can get it here:",
+        "SETTINGS_TOKEN_LINK": "Where to get a token?"
+    }
+    default = en
+
+def get_locale():
+    lang = Locale.getDefault().getLanguage()
+    return getattr(Locales, lang, Locales.default)
+
+class GitHubSearchPlugin(BasePlugin):
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+
+    def create_settings(self):
+        loc = get_locale()
+        return [
+            Header(loc["SETTINGS_TITLE"]),
+            Input(
+                key=TOKEN_SETTINGS_KEY,
+                text=loc["SETTINGS_TOKEN"],
+                default="",
+                subtext=loc["SETTINGS_TOKEN_SUB"]
+            ),
+            Text(
+                text=loc["SETTINGS_TOKEN_LINK"],
+                accent=True,
+                on_click=lambda _: self.open_url("https://github.com/settings/tokens")
+            ),
+            Divider(text=".gitsrc [query] / .gituser [query]")
+        ]
+
+    def open_url(self, url):
+        import android_utils
+        android_utils.open_url(url)
+
+    def on_send_message_hook(self, account, params):
+        if not hasattr(params, "message") or not isinstance(params.message, str):
+            return HookResult()
+        msg = params.message.strip()
+        loc = get_locale()
+        if msg.startswith(".gitsrc"):
+            query = msg[7:].strip()
+            if not query:
+                params.message = loc["USAGE_SRC"]
+                return HookResult(strategy=HookStrategy.MODIFY, params=params)
+            result = self.search_github(query, users=True, repos=True)
+            params.message = result
+            return HookResult(strategy=HookStrategy.MODIFY, params=params)
+        elif msg.startswith(".gituser"):
+            query = msg[9:].strip()
+            if not query:
+                params.message = loc["USAGE_USER"]
+                return HookResult(strategy=HookStrategy.MODIFY, params=params)
+            result = self.search_github(query, users=True, repos=False)
+            params.message = result
+            return HookResult(strategy=HookStrategy.MODIFY, params=params)
+        return HookResult()
+
+    def search_github(self, query, users=True, repos=True):
+        loc = get_locale()
+        token = self.get_setting(TOKEN_SETTINGS_KEY, "").strip()
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        if token:
+            headers["Authorization"] = f"token {token}"
+        try:
+            if repos:
+                r = requests.get(f"{GITHUB_API_URL}/search/repositories", params={"q": query}, headers=headers, timeout=10)
+                if r.status_code == 200 and r.json().get("items"):
+                    repo = r.json()["items"][0]
+                    name = repo.get('full_name', '')
+                    desc = repo.get('description', '') or ''
+                    url = repo.get('html_url', '')
+                    result = f"[{name}]\n"
+                    if desc:
+                        result += f"{desc}\n"
+                    result += f"{url}"
+                    return result
+            if users:
+                r = requests.get(f"{GITHUB_API_URL}/search/users", params={"q": query}, headers=headers, timeout=10)
+                if r.status_code == 200 and r.json().get("items"):
+                    user = r.json()["items"][0]
+                    login = user.get('login', '')
+                    url = user.get('html_url', '')
+                    
+                    user_profile = requests.get(f"{GITHUB_API_URL}/users/{login}", headers=headers, timeout=10)
+                    if user_profile.status_code == 200:
+                        profile = user_profile.json()
+                        desc = profile.get('bio', '') or ''
+                        result = f"[{login}]\n"
+                        if desc:
+                            result += f"{desc}\n"
+                        result += f"{url}\n\nRepository"
+                        
+                        repos_resp = requests.get(f"{GITHUB_API_URL}/users/{login}/repos", headers=headers, timeout=10, params={"per_page": 100, "sort": "updated"})
+                        if repos_resp.status_code == 200:
+                            repos = repos_resp.json()
+                            if repos:
+                                for repo in repos:
+                                    repo_name = repo.get('name', '')
+                                    repo_url = repo.get('html_url', '')
+                                    result += f"\n{repo_name} {repo_url}"
+                            else:
+                                result += f"\n{loc['NOT_FOUND']}"
+                        else:
+                            result += f"\n{loc['NOT_FOUND']}"
+                        return result
+                    else:
+                    
+                        result = f"[{login}]\n\n{url}"
+                        return result
+            return loc["NOT_FOUND"]
+        except Exception as e:
+            return loc["ERROR"] + str(e) 
