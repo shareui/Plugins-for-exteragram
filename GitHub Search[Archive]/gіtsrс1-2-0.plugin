@@ -1,0 +1,349 @@
+import requests
+from base_plugin import BasePlugin, HookResult, HookStrategy
+from ui.settings import Header, Input, Divider, Text
+from java.util import Locale, ArrayList
+from markdown_utils import parse_markdown, TLEntityType, RawEntity
+from org.telegram.tgnet import TLRPC
+
+__id__ = "456786545"
+__name__ = "GitHub Search"
+__version__ = "1.2.0"
+__author__ = "@shrdevv"
+__description__ = ".gitsrc ищет репозитории на Github. .gituser ищет пользователей на GitHub. .gitorg ищет организации на GitHub. Сообщить о баге: @pluffinbot"
+__min_version__ = "11.12.0"
+__icon__ = "plugin232/10"
+
+GITHUB_API_URL = "https://api.github.com"
+TOKEN_SETTINGS_KEY = "github_token"
+
+class Locales:
+    ru = {
+        "USAGE_SRC": "Пример: .gitsrc exteraGram",
+        "USAGE_USER": "Пример: .gituser torvalds",
+        "NOT_FOUND": "Ничего не найдено :(",
+        "ERROR": "Ошибка при поиске: ",
+        "SETTINGS_TITLE": "Настройки GitHub Search",
+        "SETTINGS_TOKEN": "Нажми чтобы изменить API",
+        "SETTINGS_TOKEN_SUB": "Для увеличения лимита запросов. Можно получить тут:"
+    }
+    en = {
+        "USAGE_SRC": "Usage: .gitsrc exteraGram",
+        "USAGE_USER": "Usage: .gituser torvalds",
+        "NOT_FOUND": "Nothing found :(",
+        "ERROR": "Search error: ",
+        "SETTINGS_TITLE": "GitHub Search Settings",
+        "SETTINGS_TOKEN": "Click to change API",
+        "SETTINGS_TOKEN_SUB": "To increase request limits. You can get it here:"
+    }
+    default = en
+
+def get_locale():
+    lang = Locale.getDefault().getLanguage()
+    return getattr(Locales, lang, Locales.default)
+
+class GitHubSearchPlugin(BasePlugin):
+    def on_plugin_load(self):
+        self.add_on_send_message_hook()
+
+    def create_settings(self):
+        loc = get_locale()
+        return [
+            Header(loc["SETTINGS_TITLE"]),
+            Input(
+                key=TOKEN_SETTINGS_KEY,
+                text=loc["SETTINGS_TOKEN"],
+                default="ghp_xxx",
+                subtext=loc["SETTINGS_TOKEN_SUB"]
+            ),
+            Divider(text="@shrdevv <---")
+        ]
+
+    def open_url(self, url):
+        from android_utils import run_on_ui_thread
+        def _open():
+            from android import activity
+            from android import context
+            from android import intent
+            from java.net import URI
+            from android.net import Uri
+            from android.content import Intent
+            ctx = context.getApplicationContext()
+            i = Intent(Intent.ACTION_VIEW)
+            i.setData(Uri.parse(url))
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            ctx.startActivity(i)
+        run_on_ui_thread(_open)
+
+    def on_send_message_hook(self, account, params):
+        if not hasattr(params, "message") or not isinstance(params.message, str):
+            return HookResult()
+        msg = params.message.strip()
+        loc = get_locale()
+        if msg.startswith(".gitsrc"):
+            query = msg[7:].strip()
+            if not query:
+                params.message = loc["USAGE_SRC"]
+                return HookResult(strategy=HookStrategy.MODIFY, params=params)
+            result = self.search_github(query, users=True, repos=True)
+            if isinstance(result, dict):
+                params.message = result["text"]
+                if not hasattr(params, "entities") or params.entities is None:
+                    params.entities = ArrayList()
+                else:
+                    params.entities.clear()
+                for entity in result["entities"]:
+                    params.entities.add(entity)
+            else:
+                params.message = result
+            return HookResult(strategy=HookStrategy.MODIFY, params=params)
+        elif msg.startswith(".gituser"):
+            query = msg[9:].strip()
+            if not query:
+                params.message = loc["USAGE_USER"]
+                return HookResult(strategy=HookStrategy.MODIFY, params=params)
+            result = self.search_github(query, users=True, repos=False)
+            if isinstance(result, dict):
+                params.message = result["text"]
+                if not hasattr(params, "entities") or params.entities is None:
+                    params.entities = ArrayList()
+                else:
+                    params.entities.clear()
+                for entity in result["entities"]:
+                    params.entities.add(entity)
+            else:
+                params.message = result
+            return HookResult(strategy=HookStrategy.MODIFY, params=params)
+        elif msg.startswith(".gitorg"):
+            query = msg[7:].strip()
+            if not query:
+                params.message = "Usage: .gitorg [organization]"
+                return HookResult(strategy=HookStrategy.MODIFY, params=params)
+            result = self.search_github_org(query)
+            if isinstance(result, dict):
+                params.message = result["text"]
+                if not hasattr(params, "entities") or params.entities is None:
+                    params.entities = ArrayList()
+                else:
+                    params.entities.clear()
+                for entity in result["entities"]:
+                    params.entities.add(entity)
+            else:
+                params.message = result
+            return HookResult(strategy=HookStrategy.MODIFY, params=params)
+        return HookResult()
+
+    def search_github(self, query, users=True, repos=True):
+        loc = get_locale()
+        token = self.get_setting(TOKEN_SETTINGS_KEY, "").strip()
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        if token:
+            headers["Authorization"] = f"token {token}"
+        try:
+            if repos:
+                r = requests.get(f"{GITHUB_API_URL}/search/repositories", params={"q": query}, headers=headers, timeout=10)
+                if r.status_code == 200 and r.json().get("items"):
+                    repo = r.json()["items"][0]
+                    name = repo.get('full_name', '')
+                    desc = repo.get('description', '') or ''
+                    url = repo.get('html_url', '')
+                    owner = repo.get('owner', {})
+                    owner_login = owner.get('login', '')
+                    owner_url = owner.get('html_url', '')
+                    owner_type = owner.get('type', '')
+                    stars = repo.get('stargazers_count', 0)
+                    forks = repo.get('forks_count', 0)
+                    updated_at = repo.get('updated_at', '')
+                    
+                    if updated_at:
+                        from datetime import datetime
+                        try:
+                            dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                            updated_str = dt.strftime('%d.%m.%Y')
+                        except:
+                            updated_str = updated_at[:10]
+                    else:
+                        updated_str = "N/A"
+                    
+                    message_text = f"[{name}]\n"
+                    author_type = "Organization" if owner_type == "Organization" else "Author"
+                    message_text += f"{author_type} [{owner_login}]\n"
+                    message_text += f"Last update [{updated_str}]\n"
+                    message_text += f"Stars [{stars}★]\n"
+                    message_text += f"Forks [{forks}]"
+                    
+                    entities = []
+                    
+                    repo_entity = TLRPC.TL_messageEntityTextUrl()
+                    repo_entity.offset = 1
+                    repo_entity.length = len(name.encode('utf_16_le')) // 2
+                    repo_entity.url = url
+                    entities.append(repo_entity)
+                    
+                    author_tag = f"[{owner_login}]"
+                    author_line = f"{author_type} {author_tag}"
+                    author_start = message_text.rfind(author_tag)
+                    author_entity = TLRPC.TL_messageEntityTextUrl()
+                    author_entity.offset = len(message_text[:author_start + 1].encode('utf_16_le')) // 2
+                    author_entity.length = len(owner_login.encode('utf_16_le')) // 2
+                    author_entity.url = owner_url
+                    entities.append(author_entity)
+                    
+                    return {"text": message_text, "entities": entities}
+            if users:
+                r = requests.get(f"{GITHUB_API_URL}/search/users", params={"q": query}, headers=headers, timeout=10)
+                if r.status_code == 200 and r.json().get("items"):
+                    user = r.json()["items"][0]
+                    login = user.get('login', '')
+                    url = user.get('html_url', '')
+                    
+                    user_profile = requests.get(f"{GITHUB_API_URL}/users/{login}", headers=headers, timeout=10)
+                    if user_profile.status_code == 200:
+                        profile = user_profile.json()
+                        desc = profile.get('bio', '') or ''
+                        
+                        message_text = f"[{login}]\n"
+                        entities = []
+                        
+                        username_entity = TLRPC.TL_messageEntityTextUrl()
+                        username_entity.offset = 1
+                        username_entity.length = len(login.encode('utf_16_le')) // 2
+                        username_entity.url = url
+                        entities.append(username_entity)
+                        
+                        if desc:
+                            message_text += f"> {desc}\n\n"
+                        else:
+                            message_text += "\n"
+                        
+                        message_text += "Repository\n"
+                        
+                        repos_resp = requests.get(f"{GITHUB_API_URL}/users/{login}/repos", headers=headers, timeout=10, params={"per_page": 5, "sort": "updated"})
+                        if repos_resp.status_code == 200:
+                            repos = repos_resp.json()
+                            if repos:
+                                for repo in repos:
+                                    repo_name = repo.get('name', '')
+                                    repo_url = repo.get('html_url', '')
+                                    stars = repo.get('stargazers_count', 0)
+                                    updated_at = repo.get('updated_at', '')
+                                    if updated_at:
+                                        from datetime import datetime
+                                        try:
+                                            dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                                            updated_str = dt.strftime('%d.%m.%Y')
+                                        except:
+                                            updated_str = updated_at[:10]
+                                    else:
+                                        updated_str = "N/A"
+                                    
+                                    message_text += f"[{repo_name}]\n"
+                                    message_text += f"[{stars}★] [{updated_str}]\n\n"
+                                    
+                                    repo_entity = TLRPC.TL_messageEntityTextUrl()
+                                    repo_start = message_text.rfind(f"[{repo_name}]")
+                                    repo_entity.offset = len(message_text[:repo_start + 1].encode('utf_16_le')) // 2
+                                    repo_entity.length = len(repo_name.encode('utf_16_le')) // 2
+                                    repo_entity.url = repo_url
+                                    entities.append(repo_entity)
+                            else:
+                                message_text += f"{loc['NOT_FOUND']}"
+                        else:
+                            message_text += f"{loc['NOT_FOUND']}"
+                        
+                        return {"text": message_text, "entities": entities}
+                    else:
+                        message_text = f"[{login}]\n\n{url}"
+                        entities = []
+                        username_entity = TLRPC.TL_messageEntityTextUrl()
+                        username_entity.offset = 1
+                        username_entity.length = len(login.encode('utf_16_le')) // 2
+                        username_entity.url = url
+                        entities.append(username_entity)
+                        return {"text": message_text, "entities": entities}
+            return loc["NOT_FOUND"]
+        except Exception as e:
+            return loc["ERROR"] + str(e)
+
+    def search_github_org(self, query):
+        import requests
+        from org.telegram.tgnet import TLRPC
+        GITHUB_API_URL = "https://api.github.com"
+        token = self.get_setting(TOKEN_SETTINGS_KEY, "").strip()
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        if token:
+            headers["Authorization"] = f"token {token}"
+        org_url = f"{GITHUB_API_URL}/orgs/{query}"
+        r = requests.get(org_url, headers=headers, timeout=10)
+        if r.status_code != 200:
+            return "Organization not found"
+        org = r.json()
+        login = org.get('login', '')
+        url = org.get('html_url', '')
+        desc = org.get('description', '') or ''
+        public_repos = org.get('public_repos', 0)
+        members_url = org.get('members_url', '').replace('{/member}', '')
+        location = org.get('location', '') or None
+        blog = org.get('blog', '') or None
+        
+        members_count = None
+        try:
+            members_resp = requests.get(members_url, headers=headers, timeout=10, params={"per_page": 1})
+            if 'Link' in members_resp.headers and 'last' in members_resp.headers['Link']:
+                import re
+                m = re.search(r'&page=(\d+)>; rel="last"', members_resp.headers['Link'])
+                if m:
+                    members_count = int(m.group(1))
+            else:
+                members_count = len(members_resp.json())
+        except:
+            pass
+
+        repos_url = f"{GITHUB_API_URL}/orgs/{login}/repos"
+        repos_resp = requests.get(repos_url, headers=headers, timeout=10, params={"per_page": 2, "sort": "updated"})
+        repos = repos_resp.json() if repos_resp.status_code == 200 else []
+        message_text = f"[{login}]\n"
+        entities = []
+        org_entity = TLRPC.TL_messageEntityTextUrl()
+        org_entity.offset = 1
+        org_entity.length = len(login.encode('utf_16_le')) // 2
+        org_entity.url = url
+        entities.append(org_entity)
+        if desc:
+            message_text += f"> {desc}\n\n"
+        message_text += f"Public repos [{public_repos}]\n"
+        if members_count is not None:
+            message_text += f"Members [{members_count}]\n"
+        if location:
+            message_text += f"Location [{location}]\n"
+        if blog:
+            message_text += f"Blog [link]\n"
+            blog_start = message_text.rfind("[link]")
+            blog_entity = TLRPC.TL_messageEntityTextUrl()
+            blog_entity.offset = len(message_text[:blog_start + 1].encode('utf_16_le')) // 2
+            blog_entity.length = len("link".encode('utf_16_le')) // 2
+            blog_entity.url = blog
+            entities.append(blog_entity)
+        if repos:
+            message_text += "\nTop repositories:\n"
+            for repo in repos:
+                repo_name = repo.get('name', '')
+                repo_url = repo.get('html_url', '')
+                stars = repo.get('stargazers_count', 0)
+                updated_at = repo.get('updated_at', '')
+                if updated_at:
+                    from datetime import datetime
+                    try:
+                        dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                        updated_str = dt.strftime('%d.%m.%Y')
+                    except:
+                        updated_str = updated_at[:10]
+                else:
+                    updated_str = "N/A"
+                message_text += f"[{repo_name}]\n[{stars}★] [{updated_str}]\n\n"
+                repo_start = message_text.rfind(f"[{repo_name}]")
+                repo_entity = TLRPC.TL_messageEntityTextUrl()
+                repo_entity.offset = len(message_text[:repo_start + 1].encode('utf_16_le')) // 2
+                repo_entity.length = len(repo_name.encode('utf_16_le')) // 2
+                repo_entity.url = repo_url
+                entities.append(repo_entity)
+        return {"text": message_text.strip(), "entities": entities} 
